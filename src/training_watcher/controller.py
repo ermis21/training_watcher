@@ -18,6 +18,7 @@ are thin convenience wrappers over this class.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import signal
@@ -33,7 +34,11 @@ from .offload import cuda_free_bytes, empty_cache, offload_to_cpu, reload_to_dev
 from .smi import GpuReading, read_gpu, resolve_physical_index
 from .window import in_owned_window
 
-CheckpointCb = Callable[[], None]
+# A checkpoint callback is EITHER zero-arg (closes over live loop state) OR takes
+# ``(step, epoch)`` — the controller inspects its arity once at register() time and calls
+# the right form. Both are equivalent; the two-arg form just lets a consumer pass a stable
+# module-level function instead of a fragile closure.
+CheckpointCb = Callable[..., None]
 LifecycleCb = Callable[[dict[str, Any]], None]
 
 RUNNING = "RUNNING"
@@ -70,6 +75,7 @@ class CoopController:
         self._optimizer_ref: Any = None
         self._restore_map: Any = None
         self._checkpoint_cb: CheckpointCb | None = None
+        self._checkpoint_cb_wants_args = False       # True if cb takes (step, epoch)
         self._reload_cb: Callable[[], None] | None = None
         self._on_pause: LifecycleCb | None = None
         self._on_resume: LifecycleCb | None = None
@@ -96,9 +102,22 @@ class CoopController:
         on_resume: LifecycleCb | None = None,
         on_yield: LifecycleCb | None = None,
     ) -> "CoopController":
-        """Register the model + a zero-arg checkpoint callback (reads live loop state)."""
+        """Register the model + a checkpoint callback.
+
+        ``checkpoint_cb`` may be **zero-arg** (the classic form — it closes over live loop
+        state so it sees the current ``global_step``/``optimizer``) **or** take
+        ``(step, epoch)`` (so a consumer can pass a stable function instead of a closure).
+        The arity is inspected once here and the matching call form is used at the pause
+        site. The pause-moment checkpoint is the kill-safety net, so it must save the
+        *current* step — the two-arg form receives exactly the step/epoch passed to
+        :meth:`guard`.
+
+        NOTE: the in-process pause only reseeks the data loader correctly with a
+        single-thread loader (``num_workers=0``); see :meth:`guard`.
+        """
         self._model = model
         self._checkpoint_cb = checkpoint_cb
+        self._checkpoint_cb_wants_args = _cb_wants_args(checkpoint_cb)
         self._reload_cb = reload_cb
         self._on_pause = on_pause
         self._on_resume = on_resume
@@ -172,7 +191,13 @@ class CoopController:
     def note_checkpoint(
         self, step: int, log_path: str | None = None, metrics: Mapping[str, Any] | None = None
     ) -> None:
-        """Call right after the trainer writes a periodic checkpoint (drives agent-eval)."""
+        """Call right after the trainer writes a periodic checkpoint (drives agent-eval).
+
+        Takes no checkpoint *path* on purpose: the trainer owns its on-disk layout, and the
+        agent-eval hook reads the training **log tail** (``cfg.train_log_path``) plus the
+        ``metrics`` dict passed here — not the checkpoint files — so a path would be unused.
+        ``log_path`` is accepted for forward-compat but currently ignored.
+        """
         self._agent.maybe_run(step, metrics)
 
     def stop(self) -> None:
@@ -207,6 +232,16 @@ class CoopController:
         """Call once per optimizer step. Returns True iff a pause happened this call.
 
         Fast path is a single atomic snapshot read + a couple of comparisons.
+
+        ``optimizer`` is passed every call (never cached) because trainers often rebuild it
+        — e.g. at a freeze→unfreeze boundary — and the offload must see the live one. The
+        **scheduler is intentionally NOT taken**: it holds no GPU tensors, so it is never
+        offloaded; the trainer owns scheduler state in its own checkpoint.
+
+        REQUIRES ``num_workers=0`` on the training DataLoader. The pause simply blocks the
+        loop inside this call; with worker subprocesses the loader prefetch would desync on
+        resume (the library never sees the loader and cannot enforce this — it is on the
+        caller). The pause-moment checkpoint is the kill-safety net regardless.
         """
         if self._monitor is None:
             return False
@@ -223,14 +258,17 @@ class CoopController:
         snap = self._monitor.snapshot
         self._log.warning(
             "competitor on GPU outside owned window (pids=%s free=%.1fGB) — pausing at step %d",
-            sorted(snap.other_pids), snap.free_gb or -1.0, step,
+            sorted(snap.other_pids), (-1.0 if snap.free_gb is None else snap.free_gb), step,
         )
         self._emit(self._on_yield, {"step": step, "epoch": epoch, "other_pids": sorted(snap.other_pids)})
 
         # 1) checkpoint (load-bearing insurance if we're killed while paused)
         if self._checkpoint_cb is not None:
             try:
-                self._checkpoint_cb()
+                if self._checkpoint_cb_wants_args:
+                    self._checkpoint_cb(step, epoch)
+                else:
+                    self._checkpoint_cb()
             except Exception as exc:                       # offload anyway; state is live in RAM
                 self._log.warning("pause checkpoint failed (%r) — continuing to offload", exc)
 
@@ -301,6 +339,28 @@ class CoopController:
             cb(payload)
         except Exception as exc:
             self._log.warning("lifecycle callback failed: %r", exc)
+
+
+def _cb_wants_args(cb: Callable[..., None]) -> bool:
+    """True if ``cb`` should be called as ``cb(step, epoch)`` rather than ``cb()``.
+
+    Inspect the signature once at registration. A callback that accepts two or more
+    positional parameters — or uses ``*args`` — is given ``(step, epoch)``; anything that
+    binds with no arguments (the classic zero-arg closure) is called as ``cb()``. If the
+    signature can't be introspected (some C callables/builtins), fall back to zero-arg,
+    which is the documented default and never passes unexpected arguments.
+    """
+    try:
+        sig = inspect.signature(cb)
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for p in sig.parameters.values():
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            positional += 1
+        elif p.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+    return positional >= 2
 
 
 def _gb(n: int | None) -> float | None:

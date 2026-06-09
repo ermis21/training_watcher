@@ -35,9 +35,14 @@ for step in loop:
     coop.guard(global_step, epoch, optimizer)   # hot path; no-op unless a pause is due
     if step % N == 0: coop.note_checkpoint(step, metrics={...})
 ```
-`checkpoint_cb` is **zero-arg** and is expected to close over live loop state (so it sees the
-current `global_step`/`optimizer`). `guard()` is passed the optimizer each call because trainers
-often rebuild it (e.g. at a freeze→unfreeze boundary) — never cache a stale optimizer reference.
+`checkpoint_cb` is **zero-arg** (closes over live loop state, so it sees the current
+`global_step`/`optimizer`) **or** takes `(step, epoch)` — `register()` inspects the arity once
+and calls the matching form, so a consumer can pass a stable module-level function instead of a
+fragile closure. `guard()` is passed the optimizer each call because trainers often rebuild it
+(e.g. at a freeze→unfreeze boundary) — never cache a stale optimizer reference. `guard()` does
+**not** take the scheduler: it holds no GPU tensors and is never offloaded (the trainer owns
+scheduler state in its own checkpoint). The in-process pause requires `num_workers=0` (the
+library never sees the loader and cannot enforce it — documented in `register()`/`guard()`).
 
 ## Invariants that must not regress (each has a test; keep them)
 1. **Per-tensor device restoration on reload.** AdamW (non-capturable, the default) keeps the

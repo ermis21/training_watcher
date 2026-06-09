@@ -27,12 +27,18 @@ from training_watcher import CoopController, CoopConfig, auto_stop
 
 coop = CoopController(CoopConfig(off_hours=(22, 8)), device=device)
 coop.register(model, checkpoint_cb)          # checkpoint_cb: zero-arg, reads live loop state
-coop.start()
+coop.start()                                 #   (or checkpoint_cb(step, epoch) — auto-detected)
 auto_stop(coop)
 for step in training_loop:
     ...
     coop.guard(global_step, epoch, optimizer)   # no-op unless a pause is due
 ```
+
+`checkpoint_cb` may be zero-arg (a closure over live loop state) **or** take `(step, epoch)`;
+`register()` inspects its arity once and calls the matching form. The in-process pause requires
+a single-thread loader (`num_workers=0`) — the library never sees the loader, so this is on the
+caller. `guard()` takes the optimizer (trainers rebuild it at freeze→unfreeze boundaries) but
+**not** the scheduler, which holds no GPU tensors and is never offloaded.
 
 `guard()` is the lean hot path: one atomic snapshot read plus a couple of comparisons; it
 returns `True` only on the (rare) call where a pause actually happened. The background

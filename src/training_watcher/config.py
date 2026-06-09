@@ -53,6 +53,9 @@ class CoopConfig:
     poll_s: float = 20.0                 # monitor poll cadence
     smi_timeout_s: float = 10.0          # per nvidia-smi call; timeout => "unknown", never hangs
     stale_after_s: float = 60.0          # a snapshot older than this is treated as "unknown"
+    # Resolved to the real PID at instance-creation time (NOT a sentinel): the
+    # default_factory runs os.getpid() in __init__, so CoopConfig().our_pid == os.getpid().
+    # Overridable only for tests; production code should leave it at the default.
     our_pid: int = field(default_factory=os.getpid)
     gpu_index: int | None = None         # physical GPU to watch; None => resolve from the torch device
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "training_watcher"
-version = "0.1.0"
+version = "0.1.1"
 description = "In-process cooperative GPU sharing for training loops: checkpoint, free VRAM, yield to competitors, and auto-resume — no external daemon."
 readme = "README.md"
 requires-python = ">=3.12"

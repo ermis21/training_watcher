@@ -4,6 +4,31 @@ All notable changes to `training_watcher` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] — 2026-06-09
+
+Ergonomics + a small log-correctness fix. No change to the pause/resume state machine.
+
+### Added
+- `register()` now accepts a `checkpoint_cb(step, epoch)` callback **in addition to** the
+  classic zero-arg form. The arity is inspected once at registration (`inspect.signature`)
+  and the matching call form is used at the pause site, so a consumer can pass a stable
+  module-level function instead of a fragile closure. Backward-compatible: a zero-arg cb is
+  still called as `cb()`.
+
+### Fixed
+- `_do_pause` pause log formatted `free_gb` with `free_gb or -1.0`, which mislabels a
+  legitimately full GPU (`free_gb == 0.0`) as "unknown" (`-1.0`). Now uses an explicit
+  `is None` check (log-only; no decision logic was affected).
+
+### Docs
+- Documented the `num_workers=0` requirement directly on `register()` and `guard()`.
+- Documented that `guard()` intentionally takes the optimizer (rebuilt at freeze→unfreeze
+  boundaries) but **not** the scheduler (holds no GPU tensors, never offloaded).
+- Documented that `note_checkpoint()` takes no checkpoint path on purpose (the trainer owns
+  its layout; agent-eval reads the log tail + metrics, not the checkpoint files).
+- Noted that `CoopConfig.our_pid` resolves to the real PID at instance creation (not a
+  sentinel) via `default_factory=os.getpid`.
+
 ## [0.1.0] — 2026-06-09
 
 Initial release.

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Test / type caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Runtime logs the library may emit
+training_watcher.log
+training_watcher_agent.log

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "training_watcher"
+version = "0.1.0"
+description = "In-process cooperative GPU sharing for training loops: checkpoint, free VRAM, yield to competitors, and auto-resume — no external daemon."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "ermis21" }]
+keywords = ["gpu", "training", "pytorch", "scheduler", "shared-gpu", "checkpoint", "preemption"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []  # stdlib-only core
+
+[project.optional-dependencies]
+torch = ["torch"]          # only the offload helpers touch torch (lazy import)
+nvml = ["nvidia-ml-py"]    # optional fast sensor path; nvidia-smi subprocess is the default
+test = ["pytest"]
+dev = ["pytest", "mypy"]
+
+[project.urls]
+Homepage = "https://github.com/ermis21/training_watcher"
+Repository = "https://github.com/ermis21/training_watcher"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+training_watcher = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# torch is an optional dep imported lazily; don't fail the strict core on its absence.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
